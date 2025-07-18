@@ -5,7 +5,7 @@ const (
 )
 
 const (
-	HunyuanToekn   = "sk-kfllE5td6j6PjJ87VBCoDfXWBr1LnUu2QJZTtH2rQREuGyUD"
+	HunyuanToekn   = "***"
 	HunyuanModel   = "hunyuan-turbos-latest"
 	HunyuanBaseUrl = "https://api.hunyuan.cloud.tencent.com/v1"
 )
