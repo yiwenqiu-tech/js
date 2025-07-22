@@ -12,7 +12,7 @@ type Config struct {
 func LoadConfig() *Config {
 	dsn := os.Getenv("MYSQL_DSN")
 	if dsn == "" {
-		dsn = "root:123456@tcp(127.0.0.1:33060)/js?charset=utf8mb4&parseTime=True&loc=Local"
+		panic("ENV OF MYSQL_DSN IS EMPTY")
 	}
 	return &Config{
 		MySQLDSN: dsn,

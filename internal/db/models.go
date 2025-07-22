@@ -30,3 +30,13 @@ type ChatRecord struct {
 	IsUser    bool      `json:"is_user"`
 	CreatedAt time.Time `json:"created_at"`
 }
+
+// Article 资讯文章表
+type Article struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	Title     string    `gorm:"size:128" json:"title"`
+	Desc      string    `gorm:"type:text" json:"desc"`
+	Img       string    `gorm:"size:256" json:"img"`
+	ReadCount int       `json:"readCount"`
+	CreatedAt time.Time `json:"createdAt"`
+}

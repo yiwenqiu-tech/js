@@ -2,21 +2,23 @@ package logic
 
 import (
 	"context"
-	"github.com/tmc/langchaingo/chains"
-	"github.com/tmc/langchaingo/memory"
 	"jieyou-backend/internal/common"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/tmc/langchaingo/chains"
+	"github.com/tmc/langchaingo/memory"
+
+	"jieyou-backend/internal/db"
+
 	"github.com/gin-gonic/gin"
 	langopenai "github.com/tmc/langchaingo/llms/openai"
 	"gorm.io/gorm"
-	"jieyou-backend/internal/db"
 )
 
 const MaxChatPerDay = 10
-const MaxTokenPerMsg = 500
+const MaxTokenPerMsg = 200
 
 // SetupRouter 路由入口
 func SetupRouter() *gin.Engine {
@@ -33,6 +35,9 @@ func SetupRouter() *gin.Engine {
 	r.GET("/api/rank/total", TotalRankHandler)
 	r.POST("/api/chat", ChatHandler)
 	r.GET("/api/chat/history", ChatHistoryHandler)
+	r.GET("/api/summary", SummaryHandler)
+	r.GET("/api/articles", GetArticlesHandler)
+	r.POST("/api/article", CreateArticleHandler)
 
 	return r
 }
@@ -67,7 +72,7 @@ func SignInHandler(c *gin.Context) {
 	c.JSON(200, gin.H{"message": "sign in success"})
 }
 
-// 破戒
+// BreakHandler 破戒
 func BreakHandler(c *gin.Context) {
 	var req struct {
 		OpenID   string `json:"openid"`
@@ -83,17 +88,23 @@ func BreakHandler(c *gin.Context) {
 		return
 	}
 	today := time.Now().Format("2006-01-02")
+	var count int64
+	db.GetDB().Model(&db.SignRecord{}).Where("user_id = ? AND date = ? AND type = ?", user.ID, today, "break").Count(&count)
+	if count > 0 {
+		c.JSON(400, gin.H{"error": "already broke today"})
+		return
+	}
+	// 删除当天的sign记录（如果有）
+	db.GetDB().Where("user_id = ? AND date = ? AND type = ?", user.ID, today, "sign").Delete(&db.SignRecord{})
 	record := db.SignRecord{UserID: user.ID, Date: today, Type: "break"}
 	if err := db.GetDB().Create(&record).Error; err != nil {
 		c.JSON(500, gin.H{"error": "db error"})
 		return
 	}
-	// 清空所有 type=sign 的签到记录
-	db.GetDB().Where("user_id = ? AND type = ?", user.ID, "sign").Delete(&db.SignRecord{})
 	c.JSON(200, gin.H{"message": "break success"})
 }
 
-// 日历
+// CalendarHandler 日历
 func CalendarHandler(c *gin.Context) {
 	openid := c.Query("openid")
 	if openid == "" {
@@ -106,6 +117,7 @@ func CalendarHandler(c *gin.Context) {
 		c.JSON(404, gin.H{"error": "user not found"})
 		return
 	}
+	// 拉取所有记录
 	var records []db.SignRecord
 	db.GetDB().Where("user_id = ?", user.ID).Order("date asc").Find(&records)
 
@@ -168,64 +180,53 @@ func nextDay(date string) string {
 	return t.AddDate(0, 0, 1).Format("2006-01-02")
 }
 
-// 月排行榜
+// MonthRankHandler 月排行榜
 func MonthRankHandler(c *gin.Context) {
-	month := time.Now().Format("2006-01")
 	openid := c.Query("open_id")
-
 	type Result struct {
 		Nickname string
-		Count    int64
+		Streak   int64
 		UserID   uint
 		IsSelf   bool
 		Rank     int
 	}
 	var results []Result
-	db.GetDB().Table("sign_records").
-		Select("users.nickname, sign_records.user_id, COUNT(*) as count").
-		Joins("JOIN users ON users.id = sign_records.user_id").
-		Where("sign_records.type = ? AND sign_records.date LIKE ?", "sign", month+"%").
-		Group("user_id").
-		Order("count DESC").
-		Scan(&results)
-
+	// SQL聚合：查每个用户最后一次break后连续sign天数
+	db.GetDB().Raw(`
+	SELECT u.id as user_id, u.nickname,
+	  COUNT(s.id) as streak
+	FROM users u
+	LEFT JOIN (
+	  SELECT user_id, MAX(CASE WHEN type = 'break' THEN date END) as last_break
+	  FROM sign_records
+	  GROUP BY user_id
+	) b ON u.id = b.user_id
+	LEFT JOIN sign_records s
+	  ON s.user_id = u.id
+	  AND s.type = 'sign'
+	  AND (b.last_break IS NULL OR s.date > b.last_break)
+	GROUP BY u.id, u.nickname
+	ORDER BY streak DESC, u.id ASC
+	LIMIT 10
+	`).Scan(&results)
 	// 排名处理
 	for i := range results {
 		results[i].Rank = i + 1
 	}
-
-	var top10 []Result
-	if len(results) > 10 {
-		top10 = results[:10]
-	} else {
-		top10 = results
-	}
-
-	selfIdx := -1
-	var self Result
+	// 标记自己
 	if openid != "" {
 		var user db.User
 		err := db.GetDB().Where("open_id = ?", openid).First(&user).Error
 		if err == nil {
-			for i, r := range results {
-				if r.UserID == user.ID {
-					selfIdx = i
+			for i := range results {
+				if results[i].UserID == user.ID {
+					results[i].IsSelf = true
 					break
-				}
-			}
-			if selfIdx >= 0 {
-				if selfIdx < 10 {
-					top10[selfIdx].IsSelf = true
-				} else {
-					self = results[selfIdx]
-					self.IsSelf = true
-					top10 = append(top10, self)
 				}
 			}
 		}
 	}
-
-	c.JSON(200, gin.H{"rank": top10})
+	c.JSON(200, gin.H{"rank": results})
 }
 
 // 总排行榜
@@ -233,59 +234,48 @@ func TotalRankHandler(c *gin.Context) {
 	openid := c.Query("open_id")
 	type Result struct {
 		Nickname string
-		Count    int64
+		Streak   int64
 		UserID   uint
 		IsSelf   bool
 		Rank     int
 	}
 	var results []Result
-	db.GetDB().Table("sign_records").
-		Select("users.nickname, sign_records.user_id, COUNT(*) as count").
-		Joins("JOIN users ON users.id = sign_records.user_id").
-		Where("sign_records.type = ?", "sign").
-		Group("user_id").
-		Order("count DESC").
-		Scan(&results)
-
+	db.GetDB().Raw(`
+	SELECT u.id as user_id, u.nickname,
+	  COUNT(s.id) as streak
+	FROM users u
+	LEFT JOIN (
+	  SELECT user_id, MAX(CASE WHEN type = 'break' THEN date END) as last_break
+	  FROM sign_records
+	  GROUP BY user_id
+	) b ON u.id = b.user_id
+	LEFT JOIN sign_records s
+	  ON s.user_id = u.id
+	  AND s.type = 'sign'
+	  AND (b.last_break IS NULL OR s.date > b.last_break)
+	GROUP BY u.id, u.nickname
+	ORDER BY streak DESC, u.id ASC
+	LIMIT 10
+	`).Scan(&results)
 	for i := range results {
 		results[i].Rank = i + 1
 	}
-
-	var top10 []Result
-	if len(results) > 10 {
-		top10 = results[:10]
-	} else {
-		top10 = results
-	}
-
-	selfIdx := -1
-	var self Result
 	if openid != "" {
 		var user db.User
 		err := db.GetDB().Where("open_id = ?", openid).First(&user).Error
 		if err == nil {
-			for i, r := range results {
-				if r.UserID == user.ID {
-					selfIdx = i
+			for i := range results {
+				if results[i].UserID == user.ID {
+					results[i].IsSelf = true
 					break
-				}
-			}
-			if selfIdx >= 0 {
-				if selfIdx < 10 {
-					top10[selfIdx].IsSelf = true
-				} else {
-					self = results[selfIdx]
-					self.IsSelf = true
-					top10 = append(top10, self)
 				}
 			}
 		}
 	}
-
-	c.JSON(200, gin.H{"rank": top10})
+	c.JSON(200, gin.H{"rank": results})
 }
 
-// AI 聊天接口
+// ChatHandler AI 聊天接口
 func ChatHandler(c *gin.Context) {
 	var req struct {
 		OpenID   string `json:"openid"`
@@ -332,11 +322,11 @@ func ChatHandler(c *gin.Context) {
 		}
 	}
 	llm, _ := langopenai.New(
-		langopenai.WithToken(common.HunyuanToekn),
+		langopenai.WithToken(common.HunyuanToken),
 		langopenai.WithModel(common.HunyuanModel),
 		langopenai.WithBaseURL(common.HunyuanBaseUrl))
 	chain := chains.NewConversation(llm, chatMemory)
-	resp, err := chains.Run(ctx, chain, req.Content, chains.WithMaxTokens(600))
+	resp, err := chains.Run(ctx, chain, req.Content, chains.WithMaxTokens(200))
 	if err != nil {
 		c.JSON(500, gin.H{"error": "AI error"})
 		return
@@ -361,6 +351,53 @@ func ChatHistoryHandler(c *gin.Context) {
 	var records []db.ChatRecord
 	db.GetDB().Where("user_id = ?", user.ID).Order("created_at asc").Find(&records)
 	c.JSON(200, gin.H{"records": records})
+}
+
+// SummaryHandler 统计汇总接口
+func SummaryHandler(c *gin.Context) {
+	var totalSign int64
+	var totalBreak int64
+	var userCount int64
+	db.GetDB().Model(&db.SignRecord{}).Where("type = ?", "sign").Count(&totalSign)
+	db.GetDB().Model(&db.SignRecord{}).Where("type = ?", "break").Count(&totalBreak)
+	db.GetDB().Model(&db.User{}).Count(&userCount)
+	c.JSON(200, gin.H{
+		"total_sign":  totalSign,
+		"total_break": totalBreak,
+		"user_count":  userCount,
+	})
+}
+
+// GetArticlesHandler 拉取文章列表
+func GetArticlesHandler(c *gin.Context) {
+	var articles []db.Article
+	db.GetDB().Order("created_at desc").Find(&articles)
+	c.JSON(200, gin.H{"articles": articles})
+}
+
+// CreateArticleHandler 创建文章
+func CreateArticleHandler(c *gin.Context) {
+	var req struct {
+		Title string `json:"title"`
+		Desc  string `json:"desc"`
+		Img   string `json:"img"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Title == "" {
+		c.JSON(400, gin.H{"error": "title required"})
+		return
+	}
+	article := db.Article{
+		Title:     req.Title,
+		Desc:      req.Desc,
+		Img:       req.Img,
+		CreatedAt: time.Now(),
+		ReadCount: 0,
+	}
+	if err := db.GetDB().Create(&article).Error; err != nil {
+		c.JSON(500, gin.H{"error": "db error"})
+		return
+	}
+	c.JSON(200, gin.H{"id": article.ID})
 }
 
 // 通过 openid 获取或创建用户
