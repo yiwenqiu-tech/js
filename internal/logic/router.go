@@ -436,8 +436,19 @@ func WxLoginHandler(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "get openid failed", "detail": string(body)})
 		return
 	}
-	// 这里可以查数据库，没有就创建用户
-	c.JSON(200, gin.H{"openid": wxResp.OpenID, "nickname": req.Nickname})
+	var user db.User
+	err = db.GetDB().Where("open_id = ?", wxResp.OpenID).First(&user).Error
+	if err == gorm.ErrRecordNotFound {
+		user = db.User{OpenID: wxResp.OpenID, Nickname: req.Nickname}
+		if req.Nickname == "" {
+			user.Nickname = fmt.Sprintf("戒友%d", user.ID)
+		}
+		db.GetDB().Create(&user)
+	} else if err != nil {
+		c.JSON(500, gin.H{"error": "db error", "detail": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"openid": wxResp.OpenID, "nickname": user.Nickname})
 }
 
 // 通过 openid 获取或创建用户
