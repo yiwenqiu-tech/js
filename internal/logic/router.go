@@ -12,6 +12,11 @@ import (
 
 	"jieyou-backend/internal/db"
 
+	"encoding/json"
+	"fmt"
+	"io/ioutil"
+	"net/http"
+
 	"github.com/gin-gonic/gin"
 	langopenai "github.com/tmc/langchaingo/llms/openai"
 	"gorm.io/gorm"
@@ -38,6 +43,7 @@ func SetupRouter() *gin.Engine {
 	r.GET("/api/summary", SummaryHandler)
 	r.GET("/api/articles", GetArticlesHandler)
 	r.POST("/api/article", CreateArticleHandler)
+	r.POST("/api/wxlogin", WxLoginHandler)
 
 	return r
 }
@@ -398,6 +404,40 @@ func CreateArticleHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{"id": article.ID})
+}
+
+// WxLoginHandler 微信登录接口
+func WxLoginHandler(c *gin.Context) {
+	type Req struct {
+		Code     string `json:"code"`
+		Nickname string `json:"nickname"`
+	}
+	var req Req
+	if err := c.ShouldBindJSON(&req); err != nil || req.Code == "" {
+		c.JSON(400, gin.H{"error": "code required"})
+		return
+	}
+	appid := common.WxAPPID
+	secret := common.WxAPPSecret
+	url := fmt.Sprintf("https://api.weixin.qq.com/sns/jscode2session?appid=%s&secret=%s&js_code=%s&grant_type=authorization_code", appid, secret, req.Code)
+	resp, err := http.Get(url)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "wx api error", "detail": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := ioutil.ReadAll(resp.Body)
+	var wxResp struct {
+		OpenID string `json:"openid"`
+		ErrMsg string `json:"errmsg"`
+	}
+	json.Unmarshal(body, &wxResp)
+	if wxResp.OpenID == "" {
+		c.JSON(400, gin.H{"error": "get openid failed", "detail": string(body)})
+		return
+	}
+	// 这里可以查数据库，没有就创建用户
+	c.JSON(200, gin.H{"openid": wxResp.OpenID, "nickname": req.Nickname})
 }
 
 // 通过 openid 获取或创建用户

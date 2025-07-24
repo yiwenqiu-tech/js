@@ -10,9 +10,20 @@ var HunyuanToken string
 var HunyuanModel = "hunyuan-turbos-latest"
 var HunyuanBaseUrl = "https://api.hunyuan.cloud.tencent.com/v1"
 
+var WxAPPID string
+var WxAPPSecret string
+
 func init() {
 	HunyuanToken = os.Getenv("HUNYUAN_TOKEN")
 	if len(HunyuanToken) == 0 {
 		panic("ENV OF HUNYUAN_TOKEN IS EMPTY")
+	}
+	WxAPPID = os.Getenv("WX_APPID")
+	if len(HunyuanToken) == 0 {
+		panic("ENV OF WX_APPID IS EMPTY")
+	}
+	WxAPPSecret = os.Getenv("WX_APP_SECRET")
+	if len(HunyuanToken) == 0 {
+		panic("ENV OF WX_APP_Secret IS EMPTY")
 	}
 }
