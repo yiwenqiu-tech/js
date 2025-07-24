@@ -464,6 +464,13 @@ func UpdateNicknameHandler(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "openid and nickname required"})
 		return
 	}
+	// 检查昵称是否已被占用
+	var count int64
+	db.GetDB().Model(&db.User{}).Where("nickname = ? AND open_id != ?", req.Nickname, req.OpenID).Count(&count)
+	if count > 0 {
+		c.JSON(400, gin.H{"error": "昵称已被占用，请"})
+		return
+	}
 	var user db.User
 	err := db.GetDB().Where("open_id = ?", req.OpenID).First(&user).Error
 	if err != nil {
