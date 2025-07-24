@@ -3,6 +3,9 @@ FROM golang:1.24.4-alpine AS builder
 
 WORKDIR /app
 
+RUN go env -w GO111MODULE=on &&\
+    go env -w GOPROXY=https://goproxy.cn,direct
+
 # 2. 复制 go.mod 和 go.sum 并下载依赖
 COPY go.mod go.sum ./
 RUN go mod download
