@@ -440,10 +440,11 @@ func WxLoginHandler(c *gin.Context) {
 	err = db.GetDB().Where("open_id = ?", wxResp.OpenID).First(&user).Error
 	if err == gorm.ErrRecordNotFound {
 		user = db.User{OpenID: wxResp.OpenID, Nickname: req.Nickname}
-		if req.Nickname == "" {
-			user.Nickname = fmt.Sprintf("戒友%d", user.ID)
-		}
 		db.GetDB().Create(&user)
+		if user.Nickname == "" {
+			user.Nickname = fmt.Sprintf("戒友%d", user.ID)
+			db.GetDB().Model(&user).Update("nickname", user.Nickname)
+		}
 	} else if err != nil {
 		c.JSON(500, gin.H{"error": "db error", "detail": err.Error()})
 		return
