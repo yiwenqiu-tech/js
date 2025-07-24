@@ -44,6 +44,7 @@ func SetupRouter() *gin.Engine {
 	r.GET("/api/articles", GetArticlesHandler)
 	r.POST("/api/article", CreateArticleHandler)
 	r.POST("/api/wxlogin", WxLoginHandler)
+	r.POST("/api/user/update_nickname", UpdateNicknameHandler)
 
 	return r
 }
@@ -450,6 +451,28 @@ func WxLoginHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{"openid": wxResp.OpenID, "nickname": user.Nickname})
+}
+
+// 修改昵称接口
+func UpdateNicknameHandler(c *gin.Context) {
+	type Req struct {
+		OpenID   string `json:"openid"`
+		Nickname string `json:"nickname"`
+	}
+	var req Req
+	if err := c.ShouldBindJSON(&req); err != nil || req.OpenID == "" || req.Nickname == "" {
+		c.JSON(400, gin.H{"error": "openid and nickname required"})
+		return
+	}
+	var user db.User
+	err := db.GetDB().Where("open_id = ?", req.OpenID).First(&user).Error
+	if err != nil {
+		c.JSON(404, gin.H{"error": "user not found"})
+		return
+	}
+	user.Nickname = req.Nickname
+	db.GetDB().Model(&user).Update("nickname", req.Nickname)
+	c.JSON(200, gin.H{"success": true, "nickname": req.Nickname})
 }
 
 // 通过 openid 获取或创建用户
