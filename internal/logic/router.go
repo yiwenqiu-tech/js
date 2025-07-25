@@ -71,6 +71,13 @@ func SignInHandler(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "already signed in today"})
 		return
 	}
+	// 新增：当天已破戒则禁止守戒签到
+	var breakCount int64
+	db.GetDB().Model(&db.SignRecord{}).Where("user_id = ? AND date = ? AND type = ?", user.ID, today, "break").Count(&breakCount)
+	if breakCount > 0 {
+		c.JSON(400, gin.H{"error": "今日已破戒"})
+		return
+	}
 	record := db.SignRecord{UserID: user.ID, Date: today, Type: "sign"}
 	if err := db.GetDB().Create(&record).Error; err != nil {
 		c.JSON(500, gin.H{"error": "db error"})
