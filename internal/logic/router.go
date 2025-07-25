@@ -3,6 +3,7 @@ package logic
 import (
 	"context"
 	"jieyou-backend/internal/common"
+	"os"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -17,7 +18,13 @@ import (
 	"io/ioutil"
 	"net/http"
 
+	"sync"
+
+	"log"
+
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
+	openai "github.com/sashabaranov/go-openai"
 	langopenai "github.com/tmc/langchaingo/llms/openai"
 	"gorm.io/gorm"
 )
@@ -45,6 +52,7 @@ func SetupRouter() *gin.Engine {
 	r.POST("/api/article", CreateArticleHandler)
 	r.POST("/api/wxlogin", WxLoginHandler)
 	r.POST("/api/user/update_nickname", UpdateNicknameHandler)
+	r.GET("/ws/ai", AIWebSocketHandler)
 
 	return r
 }
@@ -364,6 +372,7 @@ func ChatHistoryHandler(c *gin.Context) {
 	}
 	var records []db.ChatRecord
 	db.GetDB().Where("user_id = ?", user.ID).Order("created_at asc").Find(&records)
+	fmt.Println(records)
 	c.JSON(200, gin.H{"records": records})
 }
 
@@ -504,4 +513,171 @@ func getOrCreateUserByOpenID(openid, nickname string) (*db.User, error) {
 		}
 	}
 	return nil, err
+}
+
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
+
+// AI流式回复会话（仅适合单实例开发环境）
+type StreamSession struct {
+	History []rune        // 已发送内容
+	Done    chan struct{} // 结束信号
+}
+
+var aiStreamSessions = make(map[string]*StreamSession) // key: userID+msgID
+var aiStreamSessionsLock sync.Mutex
+
+func AIWebSocketHandler(c *gin.Context) {
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	// 读取前端发来的 openid、content、msg_id、received_len
+	_, msg, err := conn.ReadMessage()
+	if err != nil {
+		return
+	}
+	type Req struct {
+		OpenID      string `json:"openid"`
+		Content     string `json:"content"`
+		MsgID       string `json:"msg_id"`
+		ReceivedLen int    `json:"received_len"`
+	}
+	var req Req
+	json.Unmarshal(msg, &req)
+
+	// 查找用户
+	var user db.User
+	err = db.GetDB().Where("open_id = ?", req.OpenID).First(&user).Error
+	if err != nil {
+		conn.WriteMessage(websocket.TextMessage, []byte("用户不存在"))
+		return
+	}
+
+	cacheKey := fmt.Sprintf("%d_%s", user.ID, req.MsgID)
+
+	// 先查数据库（已完成的AI回复）
+	var aiRecord db.ChatRecord
+	if db.GetDB().Where("user_id = ? AND msg_id = ? AND is_user = 0", user.ID, req.MsgID).First(&aiRecord).Error == nil {
+		aiRunes := []rune(aiRecord.Content)
+		if req.ReceivedLen < len(aiRunes) {
+			toSend := aiRunes[req.ReceivedLen:]
+			conn.WriteMessage(websocket.TextMessage, []byte(string(toSend)))
+		}
+		conn.WriteMessage(websocket.TextMessage, []byte("[[END]]"))
+		return
+	}
+
+	// History+轮询流式会话
+	aiStreamSessionsLock.Lock()
+	session, exists := aiStreamSessions[cacheKey]
+	if !exists {
+		session = &StreamSession{
+			History: []rune{},
+			Done:    make(chan struct{}),
+		}
+		aiStreamSessions[cacheKey] = session
+		aiStreamSessionsLock.Unlock()
+
+		// 查找最近N条历史消息
+		var records []db.ChatRecord
+		db.GetDB().Where("user_id = ?", user.ID).Order("created_at desc").Limit(10).Find(&records)
+		var history []openai.ChatCompletionMessage
+		for i := len(records) - 1; i >= 0; i-- {
+			r := records[i]
+			role := openai.ChatMessageRoleAssistant
+			if r.IsUser {
+				role = openai.ChatMessageRoleUser
+			}
+			history = append(history, openai.ChatCompletionMessage{
+				Role:    role,
+				Content: r.Content,
+			})
+		}
+		history = append(history, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleSystem,
+			Content: common.RolePrompt,
+		})
+		history = append(history, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleUser,
+			Content: req.Content,
+		})
+		db.GetDB().Create(&db.ChatRecord{
+			UserID:    user.ID,
+			Content:   req.Content,
+			IsUser:    true,
+			CreatedAt: time.Now(),
+			MsgID:     req.MsgID,
+		})
+		client := openai.NewClient(os.Getenv("OPENAI_API_KEY"))
+		reqOpenAI := openai.ChatCompletionRequest{
+			Model:    openai.GPT4,
+			Messages: history,
+			Stream:   true,
+		}
+		go func(sess *StreamSession) {
+			var aiMsg string
+			stream, err := client.CreateChatCompletionStream(c, reqOpenAI)
+			if err != nil {
+				close(sess.Done)
+				return
+			}
+			defer stream.Close()
+			for {
+				response, err := stream.Recv()
+				if err != nil {
+					break
+				}
+				if len(response.Choices) > 0 {
+					delta := response.Choices[0].Delta.Content
+					if delta != "" {
+						sess.History = append(sess.History, []rune(delta)...)
+						aiMsg += delta
+					}
+				}
+			}
+			if aiMsg != "" {
+				db.GetDB().Create(&db.ChatRecord{
+					UserID:    user.ID,
+					Content:   aiMsg,
+					IsUser:    false,
+					CreatedAt: time.Now(),
+					MsgID:     req.MsgID,
+				})
+			}
+			close(sess.Done)
+			aiStreamSessionsLock.Lock()
+			delete(aiStreamSessions, cacheKey)
+			aiStreamSessionsLock.Unlock()
+		}(session)
+	} else {
+		aiStreamSessionsLock.Unlock()
+	}
+
+	// 轮询补发新内容
+	sentLen := req.ReceivedLen
+	for {
+		aiStreamSessionsLock.Lock()
+		curLen := len(session.History)
+		aiStreamSessionsLock.Unlock()
+		if sentLen < curLen {
+			toSend := session.History[sentLen:]
+			err := conn.WriteMessage(websocket.TextMessage, []byte(string(toSend)))
+			if err != nil {
+				log.Printf("[AIWS] conn %s: WriteMessage error: %v", cacheKey, err)
+				return
+			}
+			sentLen = curLen
+		}
+		select {
+		case <-session.Done:
+			conn.WriteMessage(websocket.TextMessage, []byte("[[END]]"))
+			return
+		case <-time.After(200 * time.Millisecond):
+			// 继续轮询
+		}
+	}
 }
