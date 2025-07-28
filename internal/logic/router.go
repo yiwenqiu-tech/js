@@ -3,7 +3,7 @@ package logic
 import (
 	"context"
 	"jieyou-backend/internal/common"
-	"os"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -24,7 +24,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
-	openai "github.com/sashabaranov/go-openai"
+
+	// "github.com/liudding/go-llm-api/tencent" // 移除
+	common_sdk "github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common"
+	v20230901 "github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/hunyuan/v20230901"
 	langopenai "github.com/tmc/langchaingo/llms/openai"
 	"gorm.io/gorm"
 )
@@ -49,6 +52,8 @@ func SetupRouter() *gin.Engine {
 	r.GET("/api/chat/history", ChatHistoryHandler)
 	r.GET("/api/summary", SummaryHandler)
 	r.GET("/api/articles", GetArticlesHandler)
+	r.GET("/api/article/:id", GetArticleHandler)
+	r.POST("/api/article/:id/read", IncrementReadCountHandler)
 	r.POST("/api/article", CreateArticleHandler)
 	r.POST("/api/wxlogin", WxLoginHandler)
 	r.POST("/api/user/update_nickname", UpdateNicknameHandler)
@@ -395,7 +400,67 @@ func SummaryHandler(c *gin.Context) {
 func GetArticlesHandler(c *gin.Context) {
 	var articles []db.Article
 	db.GetDB().Order("created_at desc").Find(&articles)
+
+	// 如果没有文章，添加一些测试数据
+	if len(articles) == 0 {
+		testArticles := []db.Article{
+			{
+				Title:     "如何修心养性",
+				Desc:      "# 如何修心养性\n\n## 引言\n修心养性是一个长期的过程，需要我们持之以恒地努力。\n\n## 方法一：正念冥想\n\n1. **找到安静的环境**\n2. **调整呼吸**\n3. **专注当下**\n\n## 方法二：阅读经典\n\n> 读万卷书，行万里路\n\n经典著作能够帮助我们提升思想境界。\n\n## 总结\n\n修心养性需要时间和耐心，让我们一起努力。",
+				Img:       "https://res.wx.qq.com/wxdoc/dist/assets/img/0.4cb08bb4.jpg",
+				ReadCount: 123,
+				CreatedAt: time.Now(),
+			},
+			{
+				Title:     "正念冥想入门",
+				Desc:      "# 正念冥想入门指南\n\n## 什么是正念冥想？\n\n正念冥想是一种通过专注呼吸和当下感受来达到内心平静的方法。\n\n## 基本步骤\n\n1. **准备阶段**\n   - 找一个安静的地方\n   - 坐姿要舒适\n   - 关闭手机等干扰源\n\n2. **开始冥想**\n   - 闭上眼睛\n   - 专注于呼吸\n   - 观察思绪但不跟随\n\n## 注意事项\n\n- 不要强迫自己\n- 保持耐心\n- 每天坚持练习\n\n## 效果\n\n长期练习可以：\n- 减少焦虑\n- 提高专注力\n- 增强自我控制能力",
+				Img:       "https://res.wx.qq.com/wxdoc/dist/assets/img/0.4cb08bb4.jpg",
+				ReadCount: 88,
+				CreatedAt: time.Now().Add(-24 * time.Hour),
+			},
+			{
+				Title:     "自我成长的建议",
+				Desc:      "# 自我成长的心得体会\n\n## 成长路上的感悟\n\n在自我成长的道路上，我总结了一些重要的经验。\n\n## 关键要素\n\n### 1. 目标设定\n\n设定明确、可衡量的目标非常重要。\n\n### 2. 持续学习\n\n- 保持好奇心\n- 多读书\n- 向他人学习\n\n### 3. 反思总结\n\n定期反思自己的行为和决策，总结经验教训。\n\n## 实践建议\n\n1. **制定计划**\n2. **执行计划**\n3. **检查结果**\n4. **调整改进**\n\n## 结语\n\n成长是一个持续的过程，让我们一起努力。",
+				Img:       "",
+				ReadCount: 56,
+				CreatedAt: time.Now().Add(-48 * time.Hour),
+			},
+		}
+
+		log.Printf("[Articles] Creating test articles with read counts: 123, 88, 56")
+		for _, article := range testArticles {
+			if err := db.GetDB().Create(&article).Error; err != nil {
+				log.Printf("[Articles] Failed to create test article: %v", err)
+			} else {
+				log.Printf("[Articles] Created test article: %s (ID: %d, ReadCount: %d)", article.Title, article.ID, article.ReadCount)
+			}
+		}
+
+		// 重新查询
+		db.GetDB().Order("created_at desc").Find(&articles)
+	}
+
 	c.JSON(200, gin.H{"articles": articles})
+}
+
+// GetArticleHandler 获取单个文章详情
+func GetArticleHandler(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid article ID"})
+		return
+	}
+	var article db.Article
+	if err := db.GetDB().First(&article, id).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(404, gin.H{"error": "article not found"})
+		} else {
+			c.JSON(500, gin.H{"error": "db error"})
+		}
+		return
+	}
+
+	c.JSON(200, gin.H{"article": article})
 }
 
 // CreateArticleHandler 创建文章
@@ -421,6 +486,45 @@ func CreateArticleHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{"id": article.ID})
+}
+
+// IncrementReadCountHandler 增加文章阅读量
+func IncrementReadCountHandler(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		log.Printf("[ReadCount] Invalid article ID: %v", err)
+		c.JSON(400, gin.H{"error": "invalid article ID"})
+		return
+	}
+
+	log.Printf("[ReadCount] Incrementing read count for article ID: %d", id)
+
+	var article db.Article
+	if err := db.GetDB().First(&article, id).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			log.Printf("[ReadCount] Article not found: %d", id)
+			c.JSON(404, gin.H{"error": "article not found"})
+		} else {
+			log.Printf("[ReadCount] Database error: %v", err)
+			c.JSON(500, gin.H{"error": "db error"})
+		}
+		return
+	}
+
+	log.Printf("[ReadCount] Current read count: %d", article.ReadCount)
+
+	// 增加阅读量
+	newReadCount := article.ReadCount + 1
+	if err := db.GetDB().Model(&article).Update("ReadCount", newReadCount).Error; err != nil {
+		log.Printf("[ReadCount] Failed to update read count: %v", err)
+		c.JSON(500, gin.H{"error": "failed to update read count"})
+		return
+	}
+
+	article.ReadCount = newReadCount // 更新本地对象，确保返回正确的阅读量
+	log.Printf("[ReadCount] Updated read count to: %d", article.ReadCount)
+
+	c.JSON(200, gin.H{"article": article})
 }
 
 // WxLoginHandler 微信登录接口
@@ -529,17 +633,24 @@ var aiStreamSessions = make(map[string]*StreamSession) // key: userID+msgID
 var aiStreamSessionsLock sync.Mutex
 
 func AIWebSocketHandler(c *gin.Context) {
+	log.Println("[AIWS] WebSocket connection start")
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
+		log.Printf("[AIWS] Upgrade error: %v", err)
 		return
 	}
-	defer conn.Close()
+	defer func() {
+		log.Println("[AIWS] WebSocket connection closed")
+		conn.Close()
+	}()
 
 	// 读取前端发来的 openid、content、msg_id、received_len
 	_, msg, err := conn.ReadMessage()
 	if err != nil {
+		log.Printf("[AIWS] ReadMessage error: %v", err)
 		return
 	}
+	log.Printf("[AIWS] Received msg: %s", string(msg))
 	type Req struct {
 		OpenID      string `json:"openid"`
 		Content     string `json:"content"`
@@ -548,21 +659,26 @@ func AIWebSocketHandler(c *gin.Context) {
 	}
 	var req Req
 	json.Unmarshal(msg, &req)
+	log.Printf("[AIWS] Parsed req: %+v", req)
 
 	// 查找用户
 	var user db.User
 	err = db.GetDB().Where("open_id = ?", req.OpenID).First(&user).Error
 	if err != nil {
+		log.Printf("[AIWS] User not found: %v", err)
 		conn.WriteMessage(websocket.TextMessage, []byte("用户不存在"))
 		return
 	}
+	log.Printf("[AIWS] User found: %+v", user)
 
 	cacheKey := fmt.Sprintf("%d_%s", user.ID, req.MsgID)
+	log.Printf("[AIWS] cacheKey: %s", cacheKey)
 
 	// 先查数据库（已完成的AI回复）
 	var aiRecord db.ChatRecord
 	if db.GetDB().Where("user_id = ? AND msg_id = ? AND is_user = 0", user.ID, req.MsgID).First(&aiRecord).Error == nil {
 		aiRunes := []rune(aiRecord.Content)
+		log.Printf("[AIWS] Found existing AI reply, len=%d", len(aiRunes))
 		if req.ReceivedLen < len(aiRunes) {
 			toSend := aiRunes[req.ReceivedLen:]
 			conn.WriteMessage(websocket.TextMessage, []byte(string(toSend)))
@@ -585,26 +701,28 @@ func AIWebSocketHandler(c *gin.Context) {
 		// 查找最近N条历史消息
 		var records []db.ChatRecord
 		db.GetDB().Where("user_id = ?", user.ID).Order("created_at desc").Limit(10).Find(&records)
-		var history []openai.ChatCompletionMessage
+		var history []*v20230901.Message
+		log.Printf("[AIWS] Building history, records found: %d", len(records))
+		history = append(history, &v20230901.Message{
+			Role:    common_sdk.StringPtr("system"),
+			Content: common_sdk.StringPtr(common.RolePrompt),
+		})
 		for i := len(records) - 1; i >= 0; i-- {
 			r := records[i]
-			role := openai.ChatMessageRoleAssistant
+			role := "assistant"
 			if r.IsUser {
-				role = openai.ChatMessageRoleUser
+				role = "user"
 			}
-			history = append(history, openai.ChatCompletionMessage{
-				Role:    role,
-				Content: r.Content,
+			history = append(history, &v20230901.Message{
+				Role:    common_sdk.StringPtr(role),
+				Content: common_sdk.StringPtr(r.Content),
 			})
 		}
-		history = append(history, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleSystem,
-			Content: common.RolePrompt,
+		history = append(history, &v20230901.Message{
+			Role:    common_sdk.StringPtr("user"),
+			Content: common_sdk.StringPtr(req.Content),
 		})
-		history = append(history, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleUser,
-			Content: req.Content,
-		})
+		log.Printf("[AIWS] Final history length: %d", len(history))
 		db.GetDB().Create(&db.ChatRecord{
 			UserID:    user.ID,
 			Content:   req.Content,
@@ -612,33 +730,20 @@ func AIWebSocketHandler(c *gin.Context) {
 			CreatedAt: time.Now(),
 			MsgID:     req.MsgID,
 		})
-		client := openai.NewClient(os.Getenv("OPENAI_API_KEY"))
-		reqOpenAI := openai.ChatCompletionRequest{
-			Model:    openai.GPT4,
-			Messages: history,
-			Stream:   true,
-		}
+
 		go func(sess *StreamSession) {
 			var aiMsg string
-			stream, err := client.CreateChatCompletionStream(c, reqOpenAI)
-			if err != nil {
-				close(sess.Done)
-				return
-			}
-			defer stream.Close()
-			for {
-				response, err := stream.Recv()
-				if err != nil {
-					break
+			log.Println("[AIWS] Start HunyuanStreamSDK call")
+			err = HunyuanStreamSDK(history, common.HunyuanModel, func(delta string) {
+				log.Printf("[AIWS] delta: %s", delta)
+				sess.History = append(sess.History, []rune(delta)...)
+				aiMsg += delta
+				writeErr := conn.WriteMessage(websocket.TextMessage, []byte(delta))
+				if writeErr != nil {
+					log.Printf("[AIWS] WriteMessage error: %v", writeErr)
 				}
-				if len(response.Choices) > 0 {
-					delta := response.Choices[0].Delta.Content
-					if delta != "" {
-						sess.History = append(sess.History, []rune(delta)...)
-						aiMsg += delta
-					}
-				}
-			}
+			})
+			log.Printf("[AIWS] HunyuanStreamSDK error: %v", err)
 			if aiMsg != "" {
 				db.GetDB().Create(&db.ChatRecord{
 					UserID:    user.ID,
@@ -665,6 +770,7 @@ func AIWebSocketHandler(c *gin.Context) {
 		aiStreamSessionsLock.Unlock()
 		if sentLen < curLen {
 			toSend := session.History[sentLen:]
+			log.Printf("[AIWS] Resend delta: %s", string(toSend))
 			err := conn.WriteMessage(websocket.TextMessage, []byte(string(toSend)))
 			if err != nil {
 				log.Printf("[AIWS] conn %s: WriteMessage error: %v", cacheKey, err)
@@ -674,6 +780,7 @@ func AIWebSocketHandler(c *gin.Context) {
 		}
 		select {
 		case <-session.Done:
+			log.Println("[AIWS] Session done, send [[END]]")
 			conn.WriteMessage(websocket.TextMessage, []byte("[[END]]"))
 			return
 		case <-time.After(200 * time.Millisecond):

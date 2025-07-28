@@ -39,6 +39,6 @@ type Article struct {
 	Title     string    `gorm:"size:128" json:"title"`
 	Desc      string    `gorm:"type:text" json:"desc"`
 	Img       string    `gorm:"size:256" json:"img"`
-	ReadCount int       `json:"readCount"`
+	ReadCount int       `gorm:"column:read_count" json:"readCount"`
 	CreatedAt time.Time `json:"createdAt"`
 }
