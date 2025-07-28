@@ -1,7 +1,6 @@
 package db
 
 import (
-	"fmt"
 	"os"
 )
 
@@ -20,5 +19,5 @@ func LoadConfig() *MysqlConfig {
 }
 
 func (c *MysqlConfig) Print() {
-	fmt.Println("MySQL DSN:", c.MySQLDSN)
+	// fmt.Println("MySQL DSN:", c.MySQLDSN)
 }

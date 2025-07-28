@@ -1,7 +1,8 @@
 package logic
 
 import (
-	"fmt"
+	"encoding/json"
+	"log"
 	"os"
 
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common"
@@ -15,12 +16,11 @@ func HunyuanStreamSDK(messages []*v20230901.Message, model string, onDelta func(
 		os.Getenv("TENCENTCLOUD_SECRETID"),
 		os.Getenv("TENCENTCLOUD_SECRETKEY"),
 	)
-	fmt.Printf("secretId: %v, secretKey: %v\n", os.Getenv("TENCENTCLOUD_SECRETID"), os.Getenv("TENCENTCLOUD_SECRETKEY"))
 	cpf := profile.NewClientProfile()
-	cpf.HttpProfile.Endpoint = "hunyuan.ap-guangzhou.tencentcloudapi.com"
+	cpf.HttpProfile.Endpoint = "hunyuan.tencentcloudapi.com"
+	cpf.Debug = false
 	client, err := v20230901.NewClient(credential, "", cpf)
 	if err != nil {
-		fmt.Printf("NewClient: %v", err)
 		return err
 	}
 
@@ -28,21 +28,18 @@ func HunyuanStreamSDK(messages []*v20230901.Message, model string, onDelta func(
 	req.Model = common.StringPtr(model)
 	req.Messages = messages
 	req.Stream = common.BoolPtr(true)
-	fmt.Printf("ChatCompletions Begin\n")
+
 	resp, err := client.ChatCompletions(req)
 	if err != nil {
-		fmt.Printf("ChatCompletions: %v", err)
-		return err
+		log.Printf("[HunyuanSDK] ChatCompletions error: %v\n", err)
 	}
-	fmt.Printf("ChatCompletions End: %v\n", resp)
-	fmt.Printf("ChatCompletions End: %v\n", resp != nil)
-	fmt.Printf("ChatCompletions End: %v\n", resp.Response != nil)
-	if resp != nil && resp.Response != nil && resp.Response.Choices != nil {
-		for _, choice := range resp.Response.Choices {
-			if choice.Delta != nil && choice.Delta.Content != nil {
-				onDelta(*choice.Delta.Content)
-			}
+	for event := range resp.Events {
+		var respParams v20230901.ChatCompletionsResponseParams
+		err := json.Unmarshal(event.Data, &respParams)
+		if err != nil {
+			log.Printf("Unmarshal resp error: %v", err)
 		}
+		onDelta(*respParams.Choices[0].Delta.Content)
 	}
-	return nil
+	return err
 }
