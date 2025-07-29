@@ -3,6 +3,10 @@ FROM golang:1.24.4-alpine AS builder
 
 WORKDIR /app
 
+# 1. 设置时区
+ENV TZ=Asia/Shanghai
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
 RUN go env -w GO111MODULE=on &&\
     go env -w GOPROXY=https://goproxy.cn,direct
 
