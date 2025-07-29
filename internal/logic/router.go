@@ -78,6 +78,7 @@ func SignInHandler(c *gin.Context) {
 		return
 	}
 	today := time.Now().Format("2006-01-02")
+	log.Printf("time: %v", time.Now().Format("2006-01-02 15:04:05"))
 	var count int64
 	db.GetDB().Model(&db.SignRecord{}).Where("user_id = ? AND date = ? AND type = ?", user.ID, today, "sign").Count(&count)
 	if count > 0 {
