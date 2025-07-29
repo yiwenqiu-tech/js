@@ -25,11 +25,19 @@ FROM alpine:latest
 
 WORKDIR /app
 
-# 6. 复制编译好的二进制文件
+# 6. 设置时区为上海时区
+ENV TZ=Asia/Shanghai
+# 镜像加速， 添加alpine apk源（中科大）
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.ustc.edu.cn/g' /etc/apk/repositories
+RUN apk add --no-cache tzdata && \
+    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && \
+    echo $TZ > /etc/timezone
+
+# 7. 复制编译好的二进制文件
 COPY --from=builder /app/app .
 
-# 7. 配置端口
+# 8. 配置端口
 EXPOSE 8080
 
-# 8. 启动服务
+# 9. 启动服务
 CMD ["./app"] 
