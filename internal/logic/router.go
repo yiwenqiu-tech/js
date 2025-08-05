@@ -45,6 +45,7 @@ func SetupRouter() *gin.Engine {
 
 	r.POST("/api/signin", SignInHandler)
 	r.POST("/api/break", BreakHandler)
+	r.POST("/api/retroactive", RetroactiveSignInHandler) // 新增：补卡接口
 	r.GET("/api/calendar", CalendarHandler)
 	r.GET("/api/rank/month", MonthRankHandler)
 	r.GET("/api/rank/total", TotalRankHandler)
@@ -58,6 +59,15 @@ func SetupRouter() *gin.Engine {
 	r.POST("/api/wxlogin", WxLoginHandler)
 	r.POST("/api/user/update_nickname", UpdateNicknameHandler)
 	r.GET("/ws/ai", AIWebSocketHandler)
+
+	// 新增：获取模板ID
+	r.GET("/api/template_id", GetTemplateIDHandler)
+
+	// 新增：订阅消息授权接口
+	r.POST("/api/subscription/auth", SubscriptionAuthHandler)
+
+	// 新增：手动触发打卡提醒检查（用于测试）
+	r.POST("/api/check_reminders", CheckRemindersHandler)
 
 	return r
 }
@@ -733,4 +743,148 @@ func AIWebSocketHandler(c *gin.Context) {
 			// 继续轮询
 		}
 	}
+}
+
+// GetTemplateIDHandler 获取模板ID
+func GetTemplateIDHandler(c *gin.Context) {
+	c.JSON(200, gin.H{"template_id": common.WxTemplateID})
+}
+
+// SubscriptionAuthHandler 订阅消息授权接口
+func SubscriptionAuthHandler(c *gin.Context) {
+	type Req struct {
+		TemplateId string `json:"templateId"`
+		OpenID     string `json:"openid"`
+	}
+	var req Req
+	if err := c.ShouldBindJSON(&req); err != nil {
+		log.Printf("解析请求失败: %v", err)
+		c.JSON(400, gin.H{"error": "invalid request"})
+		return
+	}
+
+	log.Printf("收到订阅授权请求: %+v", req)
+
+	if req.OpenID == "" {
+		c.JSON(400, gin.H{"error": "openid required"})
+		return
+	}
+
+	// 查找用户
+	var user db.User
+	err := db.GetDB().Where("open_id = ?", req.OpenID).First(&user).Error
+	if err == gorm.ErrRecordNotFound {
+		c.JSON(400, gin.H{"error": "user not found"})
+		return
+	}
+	if err != nil {
+		c.JSON(500, gin.H{"error": "db error", "detail": err.Error()})
+		return
+	}
+
+	// 检查用户是否已授权订阅消息
+	var subscription db.Subscription
+	err = db.GetDB().Where("user_id = ?", user.ID).First(&subscription).Error
+	if err == gorm.ErrRecordNotFound {
+		// 用户未授权，创建记录
+		subscription = db.Subscription{
+			UserID: user.ID,
+			IsAuth: true,
+		}
+		db.GetDB().Create(&subscription)
+		log.Printf("为用户 %s 创建订阅记录", user.Nickname)
+	} else if err != nil {
+		c.JSON(500, gin.H{"error": "db error", "detail": err.Error()})
+		return
+	} else {
+		// 用户已授权，更新记录
+		subscription.IsAuth = true
+		db.GetDB().Save(&subscription)
+		log.Printf("更新用户 %s 的订阅记录", user.Nickname)
+	}
+
+	c.JSON(200, gin.H{
+		"message": "Subscription authorized",
+	})
+}
+
+// RetroactiveSignInHandler 补卡接口
+func RetroactiveSignInHandler(c *gin.Context) {
+	var req struct {
+		OpenID   string `json:"openid"`
+		Nickname string `json:"nickname"`
+		Date     string `json:"date"` // 补卡日期 yyyy-mm-dd
+		Type     string `json:"type"` // sign 或 break
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.OpenID == "" || req.Date == "" || req.Type == "" {
+		c.JSON(400, gin.H{"error": "openid, date, type required"})
+		return
+	}
+
+	// 验证日期格式
+	if _, err := time.Parse("2006-01-02", req.Date); err != nil {
+		c.JSON(400, gin.H{"error": "invalid date format, should be yyyy-mm-dd"})
+		return
+	}
+
+	// 验证类型
+	if req.Type != "sign" && req.Type != "break" {
+		c.JSON(400, gin.H{"error": "type must be 'sign' or 'break'"})
+		return
+	}
+
+	user, err := getOrCreateUserByOpenID(req.OpenID, req.Nickname)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "user error"})
+		return
+	}
+
+	// 检查补卡日期是否在最近5天内
+	targetDate, _ := time.Parse("2006-01-02", req.Date)
+	today := time.Now()
+	fiveDaysAgo := today.AddDate(0, 0, -5)
+
+	if targetDate.Before(fiveDaysAgo) || targetDate.After(today) {
+		c.JSON(400, gin.H{"error": "只能补最近5天的卡"})
+		return
+	}
+
+	// 检查目标日期是否已有记录
+	var existingRecord db.SignRecord
+	err = db.GetDB().Where("user_id = ? AND date = ?", user.ID, req.Date).First(&existingRecord).Error
+
+	if err == nil {
+		// 已有记录
+		if req.Type == "sign" && existingRecord.Type == "sign" {
+			c.JSON(400, gin.H{"error": "该日期已守戒打卡"})
+			return
+		}
+		if req.Type == "break" && existingRecord.Type == "break" {
+			c.JSON(400, gin.H{"error": "该日期已破戒打卡"})
+			return
+		}
+		// 如果类型不同，更新记录
+		existingRecord.Type = req.Type
+		db.GetDB().Save(&existingRecord)
+	} else if err == gorm.ErrRecordNotFound {
+		// 没有记录，创建新记录
+		record := db.SignRecord{
+			UserID: user.ID,
+			Date:   req.Date,
+			Type:   req.Type,
+		}
+		db.GetDB().Create(&record)
+	} else {
+		c.JSON(500, gin.H{"error": "db error"})
+		return
+	}
+
+	c.JSON(200, gin.H{"message": "补卡成功"})
+}
+
+// CheckRemindersHandler 手动触发打卡提醒检查
+func CheckRemindersHandler(c *gin.Context) {
+	log.Println("手动触发打卡提醒检查")
+	CheckAndSendReminders()
+	c.JSON(200, gin.H{"message": "打卡提醒检查已执行"})
 }

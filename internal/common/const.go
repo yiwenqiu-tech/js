@@ -17,17 +17,27 @@ var HunyuanBaseUrl = "https://api.hunyuan.cloud.tencent.com/v1"
 var WxAPPID string
 var WxAPPSecret string
 
+// 微信推送相关配置
+var WxAccessToken string
+var WxTemplateID string
+
 func init() {
 	HunyuanToken = os.Getenv("HUNYUAN_TOKEN")
 	if len(HunyuanToken) == 0 {
 		panic("ENV OF HUNYUAN_TOKEN IS EMPTY")
 	}
 	WxAPPID = os.Getenv("WX_APPID")
-	if len(HunyuanToken) == 0 {
+	if len(WxAPPID) == 0 {
 		panic("ENV OF WX_APPID IS EMPTY")
 	}
 	WxAPPSecret = os.Getenv("WX_APP_SECRET")
-	if len(HunyuanToken) == 0 {
+	if len(WxAPPSecret) == 0 {
 		panic("ENV OF WX_APP_Secret IS EMPTY")
+	}
+
+	// 微信推送模板ID，需要在微信公众平台配置
+	WxTemplateID = os.Getenv("WX_TEMPLATE_ID")
+	if len(WxTemplateID) == 0 {
+		WxTemplateID = "TwtKLrDZBqQ2dtpGkZUW1GX5SM0m01kn9e9-21UvOKA"
 	}
 }

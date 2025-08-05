@@ -42,3 +42,13 @@ type Article struct {
 	ReadCount int       `gorm:"column:read_count" json:"readCount"`
 	CreatedAt time.Time `json:"createdAt"`
 }
+
+// Subscription 订阅消息表
+type Subscription struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	UserID    uint      `gorm:"uniqueIndex" json:"user_id"`
+	User      User      `gorm:"foreignKey:UserID" json:"user"` // 关联用户表
+	IsAuth    bool      `gorm:"default:false" json:"is_auth"`  // 是否已授权
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
