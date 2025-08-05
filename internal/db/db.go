@@ -25,5 +25,5 @@ func InitDB() {
 	fmt.Println("Connected to MySQL!")
 
 	// 自动迁移表结构
-	db.AutoMigrate(&User{}, &SignRecord{}, &ChatRecord{}, &Article{})
+	db.AutoMigrate(&User{}, &SignRecord{}, &ChatRecord{}, &Article{}, Subscription{})
 }

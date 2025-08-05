@@ -605,18 +605,15 @@ var aiStreamSessionsLock sync.Mutex
 func AIWebSocketHandler(c *gin.Context) {
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
-		log.Printf("[AIWS] Upgrade error: %v", err)
 		return
 	}
 	defer func() {
-		log.Printf("[AIWS] WebSocket connection closed\n")
 		conn.Close()
 	}()
 
 	// 读取前端发来的 openid、content、msg_id、received_len
 	_, msg, err := conn.ReadMessage()
 	if err != nil {
-		log.Printf("[AIWS] ReadMessage error: %v", err)
 		return
 	}
 	type Req struct {
@@ -632,7 +629,6 @@ func AIWebSocketHandler(c *gin.Context) {
 	var user db.User
 	err = db.GetDB().Where("open_id = ?", req.OpenID).First(&user).Error
 	if err != nil {
-		log.Printf("[AIWS] User not found: %v", err)
 		conn.WriteMessage(websocket.TextMessage, []byte("用户不存在"))
 		return
 	}
@@ -666,7 +662,6 @@ func AIWebSocketHandler(c *gin.Context) {
 		var records []db.ChatRecord
 		db.GetDB().Where("user_id = ?", user.ID).Order("created_at desc").Limit(10).Find(&records)
 		var history []*v20230901.Message
-		log.Printf("[AIWS] Building history, records found: %d", len(records))
 		history = append(history, &v20230901.Message{
 			Role:    common_sdk.StringPtr("system"),
 			Content: common_sdk.StringPtr(common.RolePrompt),
@@ -686,7 +681,6 @@ func AIWebSocketHandler(c *gin.Context) {
 			Role:    common_sdk.StringPtr("user"),
 			Content: common_sdk.StringPtr(req.Content),
 		})
-		log.Printf("[AIWS] Final history length: %d", len(history))
 		db.GetDB().Create(&db.ChatRecord{
 			UserID:    user.ID,
 			Content:   req.Content,
