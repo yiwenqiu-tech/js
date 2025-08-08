@@ -11,6 +11,12 @@ import (
 func CheckAndSendReminders() {
 	log.Println("开始检查用户打卡状态...")
 
+	// 检查数据库是否已初始化
+	if db.GetDB() == nil {
+		log.Println("数据库未初始化，跳过打卡提醒检查")
+		return
+	}
+
 	today := time.Now().Format("2006-01-02")
 
 	// 获取所有已授权订阅的用户
