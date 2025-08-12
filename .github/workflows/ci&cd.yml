@@ -5,6 +5,7 @@ name: cicd
 
 on:
   push:
+  pull_request:
 
 env:
   # Use docker.io for Docker Hub if empty
